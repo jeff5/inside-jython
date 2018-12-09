@@ -7,7 +7,7 @@
 
 # Generated during build
 /target/
-**/_build/
+**/build/
 
 # Places and extensions I use for non-SCM-able scraps
 /scraps/
