@@ -1,0 +1,36 @@
+# .gitignore: things not to put under source control
+
+# Project specific structure
+/bin/
+/local/
+**/venv/
+
+# Generated during build
+/target/
+**/_build/
+
+# Places and extensions I use for non-SCM-able scraps
+/scraps/
+/temp/
+*.saved
+
+# IDE Files (get your own!)
+/.classpath
+/.externalToolBuilders/
+/.project
+/.settings/
+/.pydevproject
+
+# Droppings of various tools, not for the record
+*.class
+*.log
+*.pyc
+*.pyd
+*.pyo
+*.orig
+*.rej
+*.swp
+*.tmp
+\#*
+*~
+
