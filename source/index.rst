@@ -3,22 +3,24 @@
    This file should at least contain the root `toctree` directive.
 
 Inside Jython
-=============
+#############
 
-These are notes on how Jython works:
+These are notes on how `Jython`_ works:
 aspects of the Jython interpreter as I come across them.
 It may be unreliable in places.
 And it may date as things evolve.
+
+.. _Jython: http://www.jython.org
 
 
 .. toctree::
    :maxdepth: 2
    :caption: Contents:
 
-
+   slots
 
 Indices and tables
-==================
+##################
 
 * :ref:`genindex`
 * :ref:`modindex`
