@@ -17,6 +17,8 @@ And it may date as things evolve.
    :maxdepth: 2
    :caption: Contents:
 
+   modules-defined-in-java
+   types-defined-in-java
    slots
 
 Indices and tables
