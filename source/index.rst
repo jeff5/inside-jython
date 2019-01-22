@@ -20,6 +20,8 @@ And it may date as things evolve.
    modules-defined-in-java
    types-defined-in-java
    slots
+   import
+
 
 Indices and tables
 ##################
