@@ -257,12 +257,218 @@ where it shows as ``<module 'exceptions' (built-in)>`` and is definitely of type
 A Python module in a Python package
 ===================================
 
+In a fresh interpreter session,
+with an appropriately prepared path down to `mylib/a/b/c/m.py`::
 
+>>> import sys; sys.path[0] = 'mylib'
+>>> import a.b.c.m
+
+should (and does) result in:
+
+*  the execution of
+   `mylib/a/__init__.py`,
+   `mylib/a/b/__init__.py`,
+   `mylib/a/b/c/__init__.py`, and
+   `mylib/a/b/c/m.py`,
+*  the creation of module entries in ``sys.modules`` with keys
+   ``"a"``,
+   ``"a.b"``,
+   ``"a.b.c"``, and
+   ``"a.b.c.m"``. and
+*  the binding of variable ``a`` to the module ``a``.
+
+The tortuous logic for this may be traced in `imp.java`.
+
+The original ``import a.b.c.m`` compiles to a call to
+``imp.importOne("a.b.c.m", <current frame>, -1))``
+which calls the overridable built-in effectively as
+``__import__("a.b.c.m", globals(), locals(), None, -1)``.
+The ``None`` here is the "from-list"
+(as this is not e.g. ``from a.b.c import m``),
+and it means we shall eventually return the module ``a`` for binding.
+The ``-1`` in the calls is the ``level`` argument, set by the compiler,
+signifying a Python 2 style of search for ``a``:
+first relative to the current module, then as absolute.
+
+The first part of the logic is in helper ``get_parent()``,
+which has access to the globals of the importing module and the ``level``.
+In this case, ``get_parent`` finds that the console session is in no ``__package__``
+and has the module ``__name__ == "__main__"``.
+``__path__`` is not set either (so it's not a package).
+``"__main__"`` is not a dotted module name and ``level==-1``,
+so there is no parent name to return (return ``null``).
+Relative import is not possible at the top level (as we are).
+By a side effect,
+the ``__package__`` of the importing module is set here to ``None``.
+On return to ``import_module_level`` we have
+``pkgName==null`` and ``pkgMod==null``, characterising top-level import.
+
+First package
+-------------
+
+Import begins with an attempt at importing the first package in the name ``"a.b.c.m"``,
+at the fragment:
+
+.. code-block:: java
+
+        StringBuilder parentName =
+                new StringBuilder(pkgMod != null ? pkgName : "");
+        PyObject topMod =
+                import_next(pkgMod, parentName, firstName, name, fromlist);
+
+In the example, ``name == "a.b.c.m"`` and ``firstName == "a"``.
+``import_next`` has the side-effect of adding ``"a"`` to the ``parentName`` buffer.
+Within ``import_next`` we check to see if module ``a`` is already loaded in ``sys.modules``,
+in which case we may return directly.
+If that is not the case, we have to load ``a``.
+This is attempted via a call to ``find_module(fullName, name, null)``,
+where here ``fullName == name == "a"``.
+
+``find_module`` expresses the standard Python module import logic
+applied to one requested module.
+We have already described the logic:
+
+#. Offer the fully qualified name to each importer on ``sys.meta_path``.
+#. Attempt to load the module as a built-in (a Java class).
+#. Look along ``sys.path`` for a definition of the module.
+#. Consider whether ``fullName`` might be a Java package.
+
+In this case the third option is the operative one.
+We put `mylib` on ``sys.path`` at the start,
+and since it needs no special importer in ``sys.path_hooks``,
+we land at the call:
+
+.. code-block:: java
+
+            ret = loadFromSource(sys, name, moduleName, Py.fileSystemDecode(p));
+
+where ``name == moduleName == "a"`` and ``p == "mylib"``.
+``sys.path`` entries like ``p`` are usually a ``PyString``, so ``p`` needs to be decoded.
+
+``loadFromSource`` is not well named.
+It will look for any of:
+
+*  `mylib/a.py`
+*  `mylib/a$py.class`
+*  `mylib/a/__init__.py`
+*  `mylib/a/__init__$py.class`
+
+It will prefer the compiled versions as long as the ``Mtime`` attribute in them,
+which preserves the last modified time of the source when it was compiled,
+matches that of the corresponding source.
+The approximate order of events in ``loadFromSource`` (for a package) is:
+
+#. Decide that ``a`` is a package.
+#. Create a ``module`` representing package ``a``
+   (with ``__path__`` set to ``["mylib/a"]``).
+#. Compile the source `mylib/a/__init__.py` (if necessary) to Java byte code for ``a$py``.
+#. Load (and Java-initialise) the class ``a$py`` into the JVM.
+#. Construct an instance of a ``a$py``
+   and call its ``PyRunnable.getMain()`` to obtain a ``PyCode`` for the main body of ``a``.
+#. Execute the ``PyCode`` against the module's ``__dict__`` as both ``globals()`` and ``locals()``.
+
+A lot of this activity is the responsibility of supporting methods we do not detail here.
+
+Notice that the ``PyCode`` is not needed (becomes garbage) once it has been executed.
+The permanent results of loading are the changes made to the module ``__dict__``.
+This may include the definition of Python functions and classes
+that have their own ``PyCode`` objects and other data as embedded values.
+After this, we return the module ``a`` from ``import_next`` into ``import_module_level``,
+and this establishes the "top module" of the import.
+
+Subsequent packages
+-------------------
+
+In the example of ``import a.b.c.m``, 
+we have imported ``a``,
+but we have a long way still to go to before we reach `m.py`.
+The next significant call in ``import_module_level`` is:
+
+.. code-block:: java
+
+            mod = import_logic(topMod, parentName,
+                    name.substring(dot + 1), name, fromlist);
+
+where ``dot`` is the position of the first dot in the full name.
+``import_logic`` has responsibility for completing the import of the module chain
+down to ``m``.
+The signature is:
+
+.. code-block:: java
+
+   static PyObject import_logic(PyObject mod, StringBuilder parentName,
+           String restOfName, String fullName, PyObject fromlist)
+
+Internally ``import_logic`` loops over the elements of the module path,
+loading each package,
+ending with the module defined by `mylib/b/c/m.py`.
+We enter with
+``mod == <module 'a' from 'mylib/a/__init__.py'>``,
+``parentName=="a"``,
+``restOfName=="b.c.m"``,
+``fullName=="a.b.c.m"``, and
+``fromlist==None``.
+
+During the iteration, ``import_next``, already discussed above, is repeatedly called, as:
+
+.. code-block:: java
+
+            mod = import_next(mod, parentName, name, fullName, fromlist);
+
+and as we move down the chain from one module to the next,
+``parentName`` becomes the name of the enclosing module (first time ``"a"``),
+and ``name`` is the simple name of the next module sought (first time ``"b"``).
+
+As previously,
+``import_next`` looks for the target by its full name (here ``"a.b"``) in ``sys.modules``.
+In this call, ``mod`` is not ``null`` as it was in the top-level, but is the module ``a``,
+and so ``import_next`` will look up ``b`` via ``mod.impAttr(name.intern())``.
+
+``PyModule.impAttr`` gets the module ``__name__``.
+From this and the simple module name it deduces the full name ``"a.b"``,
+and checks ``sys.modules`` for it (again).
+It gets the package ``__path__`` (or makes an empty one), and
+then seeks the package via essentially ``attr = imp.find_module("b", "a.b", ['mylib/a'])``.
+This differs from the call ``import_next`` might have made, only in the non-null "path".
+
+.. note::
+   The actions of ``PyModule.impAttr`` appear largely to duplicate those in ``import_next``
+   around where ``impAttr()`` is called.
+   A check is made for the module in ``sys.modules`` duplicating the one before the call.
+   ``impAttr`` checks to see if the module sought is a Java package,
+   which ``import_next`` also does (although the call is to ``JavaImportHelper.tryAddPackage``).
+   Any entry made in ``sys.modules`` during the import is allowed to supersede the
+   result, first in ``impAttr``, then again in ``import_next``.
+
+The search strategy of ``find_module`` has already been described
+(try ``sys.meta_path``, built-in modules, the path and path hooks)
+except that in this case, the parent package's ``__path__`` is used, not ``sys.path``.
+There is no path hook corresponding to `mylib/a`, so ``loadFromSource``,
+correctly deducing ``a.b`` to be a package,
+ends up compiling and executing `mylib/a/b/__init__.py`.
+The module this creates is eventually returned to the loop within ``import_logic``.
+
+The next pass of that loop imports ``a.b.c`` by an exactly parallel process.
+The import of ``a.b.c.m`` is almost the same except that the module is not a package.
+This final ``import_next`` gets us out of the loop in ``import_logic``,
+which returns the module ``a.b.c.m``.
+However, ``import_module_level`` has remembered that we wanted the first in the chain,
+ultimately because there is no "from-list",
+and finally we return through ``importOne`` into the compiled instruction with
+``<module 'a' from 'mylib\a\__init__.py'>`` for assignment to ``a``.
+
+.. note::
+   The Jython versions of ``get_parent`` and ``import_module_level`` differ from the CPython ones.
+   The difference in signatures may not be that significant,
+   representing the choice to return a ``String`` rather than update a ``char *`` buffer. 
+   Differences in structure and logic may be significant. 
 
 
 
 A Java class in a Java package
 ==============================
+
+
 
 
 A Java class in a Python package

@@ -20,7 +20,7 @@
 # -- Project information -----------------------------------------------------
 
 project = 'Inside Jython'
-copyright = '2018, Jeff Allen'
+copyright = '2019, Jeff Allen'
 author = 'Jeff Allen'
 
 # The short X.Y version
