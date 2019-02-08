@@ -186,8 +186,8 @@ Sequence of events in Jython 2.7.1
 
 The following notes are from studying the operation of import mechanisms.
 
-A built-in module (``exeptions``)
-=================================
+A built-in module (``exceptions``)
+==================================
 
 The import of ``exceptions`` occurs naturally during the initialisation of ``PySytemState``.
 Unlike ``sys`` or ``__builtins__`` it is a regular built-in module.
@@ -254,7 +254,7 @@ This is slightly at variance with CPython
 where it shows as ``<module 'exceptions' (built-in)>`` and is definitely of type ``module``.
 
 
-A Python module in a Python package
+A Python module in a Python program
 ===================================
 
 In a fresh interpreter session,
@@ -289,6 +289,8 @@ and it means we shall eventually return the module ``a`` for binding.
 The ``-1`` in the calls is the ``level`` argument, set by the compiler,
 signifying a Python 2 style of search for ``a``:
 first relative to the current module, then as absolute.
+Action transfers now to ``import_module_level``, with essentially these arguments:
+``name="a.b.c.m"``, ``top=true``, ``modDict=globals()``, ``fromlist=None``, ``level=-1``.
 
 The first part of the logic is in helper ``get_parent()``,
 which has access to the globals of the importing module and the ``level``.
@@ -464,10 +466,198 @@ and finally we return through ``importOne`` into the compiled instruction with
    Differences in structure and logic may be significant. 
 
 
+A Python module by relative import
+==================================
+
+Suppose we have a module file `mylib/a/b/m3.py` like this::
+
+   import c.m
+   print "Executed: ", __file__, "c.m =", c.m
+
+where, as previously, the path down to `mylib/a/b/c/m.py` is prepared with `__init__.py`
+files to create packages ``a``, ``a.b`` and ``a.b.c``.
+From the form of the import (in Python 2)
+you might expect the imported module ``c.m`` to be defined either in `mylib/a/b/c/m.py`
+or in `mylib/c/m.py` (or an equivalent to `mylib` elsewhere on ``sys.path``).
+We know it will be found at `mylib/a/b/c/m.py`,
+but the compiler didn't,
+and so this has to be a run-time discovery.
+
+In a fresh interpreter session,
+with an appropriately prepared path down to `mylib/a/b/c/m.py`::
+
+>>> import sys; sys.path[0] = 'mylib'
+>>> import a.b.m3
+
+The action begins with an absolute import as already studied,
+but as the body of ``m3`` is executed, during ``createFromCode``,
+we reach the implicitly relative ``import c.m``.
+We take up the story there.
+
+The compiler has translated ``import c.m`` into ``imp.importOne("c.m", <current frame>, -1)``,
+just as before.
+Action transfers now to ``import_module_level``, with essentially these arguments:
+``name="c.m"``, ``top=true``, ``modDict=a.b.m3.globals()``, ``fromlist=None``, ``level=-1``.
+
+The first part of the logic is in helper ``get_parent``,
+which has to work out the parent module name using ``globals()`` and ``level`` as input.
+``get_parent`` works out that the package name of the importing module ``a.b.m3``
+is ``a.b``.
+(It sets the module's ``__package__`` to this by side-effect, since it was missing.)
+
+If ``a.b.m3`` had been a package itself, its name would be the package name.
+If ``level`` had been a positive number,
+signifying that the compiler saw so-many dots before the name in the import statement,
+``get_parent`` would have stripped a further ``level-1`` elements from the package name.
+It would be an error at this point for ``"a.b"`` not to be a key in ``sys.modules``.
+
+From this point,
+``import_module_level`` is able to call the equivalent of
+``topMod = import_next(<module 'a.b'>, "a.b", "c", "c.m")`` 
+which succeeds in importing ``c`` relative to ``a.b``.
+Previously we encountered almost exactly this call as part of a top-level ``import a.b.c.m``,
+in the loop of ``import_logic``,
+so we don't need to walk through it again.
+However, notice that ``c`` is going to become the head module returned by ``import_module_level``,
+and ultimately returned to the body code of ``m3``,
+to be assigned to ``a.b.m3.__dict__['c']``.
+
+
+A Python module by absolute import
+==================================
+
+Suppose we have a module file `mylib/a/b/m4.py` like this::
+
+   import sys
+   print "Executed: ", __file__, "sys =", sys
+
+It is perfectly obvious to any Python programmer
+that we are importing the top-level ``sys`` module.
+But the form of the import is exactly the same as it was for an implicit relative import.
+The import mechanism has to be ready for the possibility that ``a.b.sys`` is the module intended.
+
+In a fresh interpreter session,
+with an appropriately prepared path down to `mylib/a/b/c/m.py`::
+
+>>> import sys; sys.path[0] = 'mylib'
+>>> import a.b.m4
+
+The action begins with an absolute import as already studied,
+but as the body of ``m4`` is executed, during ``createFromCode``,
+we reach the (possibly) implicitly relative ``import sys``.
+We take up the story there.
+
+The compiler has translated ``import sys`` into ``imp.importOne("sys", <current frame>, -1)``.
+We arrive in ``import_module_level``, with essentially these arguments:
+``name="sys"``, ``top=true``, ``modDict=a.b.m4.globals()``, ``fromlist=None``, ``level=-1``.
+The helper ``get_parent`` works out that
+the package name of the importing module ``a.b.m4`` is ``a.b``.
+
+The relative import attempt
+---------------------------
+
+``import_module_level`` now calls the equivalent of
+``topMod = import_next(<module 'a.b'>, "a.b", "sys", "sys")``,
+in order to search out a module called ``a.b.sys``.
+Unlike previous examples, this is not going to succeed,
+and it is worth following the steps by which Jython decides no such module exists.
+
+Because there is an enclosing module,
+``import_next`` calls ``PyModule.impAttr``.
+In ``impAttr``, the check in ``sys.modules`` fails,
+since it is looking for ``a.b.sys``,
+so it calls effectively ``attr = imp.find_module("sys", "a.b.sys", ['mylib/a/b'])``.
+
+Within ``find_module``,
+there is nothing on ``sys.meta_path``,
+and ``loadBuiltin`` doesn't find ``"a.b.sys"`` as a key in the built-in module table,
+so it searches the path of the parent module.
+``a.b.__path__ == ['mylib/a/b']``.
+The attempt in ``loadFromSource`` fail to find any of:
+
+*  `mylib/a/b/sys.py`
+*  `mylib/a/b/sys$py.class`
+*  `mylib/a/b/sys/__init__.py`
+*  `mylib/a/b/sys/__init__$py.class`
+
+and so ``find_module`` returns ``null`` to ``impAttr``.
+
+Now, ``impAttr`` tries to find ``a.b.sys`` as a Java class:
+
+.. code-block:: java
+
+            attr = PySystemState.packageManager.lookupName(fullName);
+
+This begins by looking up ``"a"`` in the nameless top-level Java package.
+(``PySystemState.packageManager`` keeps a tree-like index
+built by scanning the Java run-time and JARs on the class path.)
+The nodes are ``PyJavaPackage`` objects (a subclass of ``PyObject``),
+and so in looking up ``a`` as an attribute, we land at ``PyJavaPackage.__findattr_ex__``.
+There is no matching key in the ``__dict__`` of the root ``PyJavaPackage``,
+but each ``PyJavaPackage`` has
+a ``PackageManager __mgr__`` member that will search for a Java package by that name,
+via a call to ``__mgr__.packageExists``.
+
+In this case ``packageExists`` enumerates the current working directory but there is no
+directory `./a`.
+(If there were, the manager would add it to the index.)
+It then moves on to do the same for entries along ``sys.path``.
+`mylib/a` exists, but contains no (non-Python) Java class files.
+(Interestingly, having found `mylib/a`,
+the manager does not look any further
+for other places on ``sys.path`` that might be Java packages.)
+
+``PyJavaPackage.__findattr_ex__`` then consults ``__mgr__.findClass``
+to see if ``"a"`` designates a Java class (rather than a package).
+Going via ``Py.findClass``, and ``Py.loadAndInitClass``,
+it tries to load and initialise a class ``"a"``.
+It doesn't exist, so we end up empty-handed in ``impAttr``,
+then in ``import_next``:
+the module ``a.b`` has no ``sys`` attribute.
+
+``import_next`` will now try to find ``"sys"`` as a Java package
+through a call that is effectively ``JavaImportHelper.tryAddPackage("sys", Py.None)``.
+
+.. note::
+   It seems odd that at this point ``outerFullName = "sys"``
+   while ``fullname = "a.b.sys" is longer
+   and used subsequently to see if the module got added to ``sys.modules``.
+
+The operation of ``tryAddPackage`` in this case falls through
+to looking for ``sys`` as a package in the JVM.
+For this purpose it asks for a list of all packages currently known to the JVM
+and builds a ``TreeMap`` with the packages,
+and their containing packages (e.g. ``{java, java.lang, java.lang.invoke}``).
+If ``"sys"`` were among the keys,
+``tryAddPackage`` would try to add a module to ``sys.modules`` for it.
+
+There isn't one, of course,
+which finally allows ``import_next`` to conclude that there is no ``a.b.sys`` module,
+and report this back into ``import_module_level``.
+
+The absolute import attempt
+---------------------------
+
+An implicit relative import having failed,
+``import_module_level`` decides that the proper ``parentName`` is an empty string.
+It now calls the equivalent of
+``topMod = import_first("sys", "", "sys", [])``,
+in order to search out a top-level module called ``sys``.
+
+``import_first`` delegates to ``import_next`` which quickly finds ``sys`` in ``sys.modules``.
+If we had chosen in `m4.py` to import a module not already loaded,
+a chain of events would unfold like that already described for import to a program.
+
+
+
+
+A Python module by ``from-import``
+==================================
+
+
 
 A Java class in a Java package
 ==============================
-
 
 
 
