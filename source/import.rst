@@ -110,6 +110,8 @@ that of ``module`` or that of ``javapackage``?
 The choice has been made and reverted several times.
 
 
+.. _import-magic-2.7.1:
+
 Behaviour of Jython 2.0, 2.5.2, 2.7.1
 =====================================
 
@@ -128,6 +130,8 @@ if `a/b/c/D.py` exists instead,
 that module is loaded and becomes the meaning of ``a.b.c.D``,
 which is incorrect without explicit import.
 
+
+.. _import-magic-2.7.0:
 
 Behaviour of Jython 2.5.0, 2.5.3 and 2.7.0
 ==========================================
@@ -186,6 +190,9 @@ Sequence of events in Jython 2.7.1
 
 The following notes are from studying the operation of import mechanisms.
 
+
+.. _import-built-in:
+
 A built-in module (``exceptions``)
 ==================================
 
@@ -221,6 +228,7 @@ In our case, ``exceptions`` has no parent, and ``find_module`` will succeed.
 #. Offer the fully qualified name to each importer on ``sys.meta_path``.
 #. Attempt to load the module as a built-in (a Java class).
 #. Look along ``sys.path`` for a definition of the module.
+#. Consider whether ``fullName`` might be a Java package.
 
 ``exceptions`` is a built-in module,
 so the second option will find it for us using ``loadBuiltin``.
@@ -253,6 +261,8 @@ against the key ``"exceptions"``::
 This is slightly at variance with CPython
 where it shows as ``<module 'exceptions' (built-in)>`` and is definitely of type ``module``.
 
+
+.. _import-module-program:
 
 A Python module in a Python program
 ===================================
@@ -290,20 +300,23 @@ The ``-1`` in the calls is the ``level`` argument, set by the compiler,
 signifying a Python 2 style of search for ``a``:
 first relative to the current module, then as absolute.
 Action transfers now to ``import_module_level``, with essentially these arguments:
-``name="a.b.c.m"``, ``top=true``, ``modDict=globals()``, ``fromlist=None``, ``level=-1``.
+``name = "a.b.c.m"``, ``top = true``, ``modDict = globals()``, ``fromlist = None``, ``level = -1``.
 
 The first part of the logic is in helper ``get_parent()``,
 which has access to the globals of the importing module and the ``level``.
 In this case, ``get_parent`` finds that the console session is in no ``__package__``
-and has the module ``__name__ == "__main__"``.
+and has the module ``__name__ = "__main__"``.
 ``__path__`` is not set either (so it's not a package).
-``"__main__"`` is not a dotted module name and ``level==-1``,
+``"__main__"`` is not a dotted module name and ``level = -1``,
 so there is no parent name to return (return ``null``).
 Relative import is not possible at the top level (as we are).
 By a side effect,
 the ``__package__`` of the importing module is set here to ``None``.
 On return to ``import_module_level`` we have
-``pkgName==null`` and ``pkgMod==null``, characterising top-level import.
+``pkgName = null`` and ``pkgMod = null``, characterising top-level import.
+
+
+.. _import-module-first:
 
 First package
 -------------
@@ -318,17 +331,17 @@ at the fragment:
         PyObject topMod =
                 import_next(pkgMod, parentName, firstName, name, fromlist);
 
-In the example, ``name == "a.b.c.m"`` and ``firstName == "a"``.
+In the example, ``name = "a.b.c.m"`` and ``firstName = "a"``.
 ``import_next`` has the side-effect of adding ``"a"`` to the ``parentName`` buffer.
 Within ``import_next`` we check to see if module ``a`` is already loaded in ``sys.modules``,
 in which case we may return directly.
 If that is not the case, we have to load ``a``.
 This is attempted via a call to ``find_module(fullName, name, null)``,
-where here ``fullName == name == "a"``.
+where here ``fullName = name = "a"``.
 
 ``find_module`` expresses the standard Python module import logic
 applied to one requested module.
-We have already described the logic:
+We have already described (in :ref:`import-built-in`) the logic:
 
 #. Offer the fully qualified name to each importer on ``sys.meta_path``.
 #. Attempt to load the module as a built-in (a Java class).
@@ -344,7 +357,7 @@ we land at the call:
 
             ret = loadFromSource(sys, name, moduleName, Py.fileSystemDecode(p));
 
-where ``name == moduleName == "a"`` and ``p == "mylib"``.
+where ``name = moduleName = "a"`` and ``p = "mylib"``.
 ``sys.path`` entries like ``p`` are usually a ``PyString``, so ``p`` needs to be decoded.
 
 ``loadFromSource`` is not well named.
@@ -378,6 +391,9 @@ that have their own ``PyCode`` objects and other data as embedded values.
 After this, we return the module ``a`` from ``import_next`` into ``import_module_level``,
 and this establishes the "top module" of the import.
 
+
+.. _import-module-subsequent:
+
 Subsequent packages
 -------------------
 
@@ -405,11 +421,11 @@ Internally ``import_logic`` loops over the elements of the module path,
 loading each package,
 ending with the module defined by `mylib/b/c/m.py`.
 We enter with
-``mod == <module 'a' from 'mylib/a/__init__.py'>``,
-``parentName=="a"``,
-``restOfName=="b.c.m"``,
-``fullName=="a.b.c.m"``, and
-``fromlist==None``.
+``mod = <module 'a' from 'mylib/a/__init__.py'>``,
+``parentName = "a"``,
+``restOfName = "b.c.m"``,
+``fullName = "a.b.c.m"``, and
+``fromlist = None``.
 
 During the iteration, ``import_next``, already discussed above, is repeatedly called, as:
 
@@ -466,6 +482,8 @@ and finally we return through ``importOne`` into the compiled instruction with
    Differences in structure and logic may be significant. 
 
 
+.. _import_relative_implicit:
+
 A Python module by relative import
 ==================================
 
@@ -486,10 +504,10 @@ and so this has to be a run-time discovery.
 In a fresh interpreter session,
 with an appropriately prepared path down to `mylib/a/b/c/m.py`::
 
->>> import sys; sys.path[0] = 'mylib'
->>> import a.b.m3
+   >>> import sys; sys.path[0] = 'mylib'
+   >>> import a.b.m3
 
-The action begins with an absolute import as already studied,
+The action begins with an absolute import as already studied (in :ref:`import-module-program`),
 but as the body of ``m3`` is executed, during ``createFromCode``,
 we reach the implicitly relative ``import c.m``.
 We take up the story there.
@@ -497,7 +515,10 @@ We take up the story there.
 The compiler has translated ``import c.m`` into ``imp.importOne("c.m", <current frame>, -1)``,
 just as before.
 Action transfers now to ``import_module_level``, with essentially these arguments:
-``name="c.m"``, ``top=true``, ``modDict=a.b.m3.globals()``, ``fromlist=None``, ``level=-1``.
+``name = "c.m"``, ``top = true``,
+``modDict = a.b.m3.globals()``,
+``fromlist = None``,
+``level = -1``.
 
 The first part of the logic is in helper ``get_parent``,
 which has to work out the parent module name using ``globals()`` and ``level`` as input.
@@ -523,6 +544,8 @@ and ultimately returned to the body code of ``m3``,
 to be assigned to ``a.b.m3.__dict__['c']``.
 
 
+.. _import-module-absolute:
+
 A Python module by absolute import
 ==================================
 
@@ -539,19 +562,26 @@ The import mechanism has to be ready for the possibility that ``a.b.sys`` is the
 In a fresh interpreter session,
 with an appropriately prepared path down to `mylib/a/b/c/m.py`::
 
->>> import sys; sys.path[0] = 'mylib'
->>> import a.b.m4
+   >>> import sys; sys.path[0] = 'mylib'
+   >>> import a.b.m4
 
-The action begins with an absolute import as already studied,
+The action begins with an absolute import as already studied (in :ref:`import-module-program`),
 but as the body of ``m4`` is executed, during ``createFromCode``,
 we reach the (possibly) implicitly relative ``import sys``.
 We take up the story there.
 
 The compiler has translated ``import sys`` into ``imp.importOne("sys", <current frame>, -1)``.
 We arrive in ``import_module_level``, with essentially these arguments:
-``name="sys"``, ``top=true``, ``modDict=a.b.m4.globals()``, ``fromlist=None``, ``level=-1``.
+``name = "sys"``,
+``top = true``,
+``modDict = a.b.m4.globals()``,
+``fromlist = None``,
+``level = -1``.
 The helper ``get_parent`` works out that
 the package name of the importing module ``a.b.m4`` is ``a.b``.
+
+
+.. _import-module-relative-attempt:
 
 The relative import attempt
 ---------------------------
@@ -562,10 +592,12 @@ in order to search out a module called ``a.b.sys``.
 Unlike previous examples, this is not going to succeed,
 and it is worth following the steps by which Jython decides no such module exists.
 
+``import_next`` first checks ``sys.modules`` for the key ``a.b.sys``.
+No such module has been imported, and so it moves on.
+
 Because there is an enclosing module,
 ``import_next`` calls ``PyModule.impAttr``.
-In ``impAttr``, the check in ``sys.modules`` fails,
-since it is looking for ``a.b.sys``,
+In ``impAttr``, the check in ``sys.modules`` fails (again),
 so it calls effectively ``attr = imp.find_module("sys", "a.b.sys", ['mylib/a/b'])``.
 
 Within ``find_module``,
@@ -573,7 +605,7 @@ there is nothing on ``sys.meta_path``,
 and ``loadBuiltin`` doesn't find ``"a.b.sys"`` as a key in the built-in module table,
 so it searches the path of the parent module.
 ``a.b.__path__ == ['mylib/a/b']``.
-The attempt in ``loadFromSource`` fail to find any of:
+The attempt in ``loadFromSource`` fails to find any of:
 
 *  `mylib/a/b/sys.py`
 *  `mylib/a/b/sys$py.class`
@@ -635,6 +667,9 @@ There isn't one, of course,
 which finally allows ``import_next`` to conclude that there is no ``a.b.sys`` module,
 and report this back into ``import_module_level``.
 
+
+.. _import-module-absolute-attempt:
+
 The absolute import attempt
 ---------------------------
 
@@ -646,13 +681,124 @@ in order to search out a top-level module called ``sys``.
 
 ``import_first`` delegates to ``import_next`` which quickly finds ``sys`` in ``sys.modules``.
 If we had chosen in `m4.py` to import a module not already loaded,
-a chain of events would unfold like that already described for import to a program.
+a chain of events would unfold like that already described for :ref:`import-module-program`.
 
 
-
+.. _import_from_module:
 
 A Python module by ``from-import``
 ==================================
+
+Suppose we have a module file `mylib/a/b/m5.py` like this::
+
+   from a.b.c import m, n1, n2
+   print "Executed: ", __file__, "m =", m, (n1, n2)
+
+The interesting thing about this import is that
+``n1`` and ``n2`` are conventional attributes of package ``a.b.c``,
+while ``m`` is a module that only becomes an attribute once it is imported,
+as a result of this statement.
+In order to set up the expected attributes, let `mylib/a/b/c/__init__.py` be::
+
+   print "Executed: ", __file__
+   n0, n1, n2, n3, n4 = range(5)
+
+where, as previously, the path down to `mylib/a/b/c/m.py`
+is prepared with `__init__.py` files
+to create packages ``a``, ``a.b`` and ``a.b.c``.
+
+In a fresh interpreter session::
+
+   >>> import sys; sys.path[0] = 'mylib'
+   >>> import a.b.m5
+
+The import activity as far as invoking ``m5``
+is as already studied (in :ref:`import-module-program`),
+but as the body of ``m5`` is executed, during ``createFromCode``,
+we reach ``from a.b.c import m, n1, n2``.
+We take up the action in ``import_module_level``
+where ``name = "a.b.c"``, ``level = -1`` and ``fromlist = ('m', 'n1', 'n2')`` (a ``tuple``).
+
+
+``a.b.c`` may be an implicit relative import.
+``get_parent`` works out that
+the package name of the importing module ``a.b.m5`` is ``a.b``.
+Therefore our first hypothesis is that we're looking for ``a.b.a.b.c``,
+and so our first call is to ``import_next`` with ``mod = "a.b"`` and ``name = "a"``.
+The action unfolds as described in :ref:`import-module-relative-attempt`:
+
+ * look for `mylib/a/b/a$py.class`,
+ * look for ``a.b.a`` as a Java package,
+ * search ``sys.path`` for class ``a.b.c.m`` and the rest of the from-list elements
+   through the ``SysPathJavaLoader`` and thread context loader.
+ * Finally we decide there is no ``a.b.a`` and are back in ``import_module_level``.
+
+Having tried ``import_next`` first, we try ``import_first`` next.
+
+This call is the equivalent of
+``topMod = import_first("a", parentName, "a.b.c", ('m', 'n1', 'n2'))``,
+where ``parentName`` is an initially empty ``StringBuilder``.
+This call returns quickly with the first in the chain ``a`` as an already-imported module,
+found by ``import_next``.
+(The from-list seems superfluous
+but is used by ``import_next`` to explore Java class possibilities.)
+
+Compare this with :ref:`import-module-absolute-attempt`:
+this time the target module is not top-level and we have a from-list.
+Because here the target ``a.b.c`` is a dotted name,
+``import_module_level`` will continue its descent by a call:
+
+.. code-block:: java
+
+      mod = import_logic(topMod, parentName, "b.c", "a.b.c", ("m", "n1", "n2"))
+
+As we have seen,
+``import_logic`` works by iterated calls to ``import_next``.
+
+In this example, the first such looks for ``a.b`` and finds it already imported.
+
+The second looks for ``a.b.c`` which is not yet imported.
+This will go via ``PyModule.impAttr`` for the module instance ``a.b``,
+in which ``imp.find_module`` will succeed in returning the module ``a.b.c``.
+This is the point at which ``a.b`` gets a new attribute ``c`` referring to the module found.
+
+The next interesting action rounds out ``import_module_level`` with a call to ``ensureFromList``.
+Effectively this is called with
+``mod = <module 'a.b.c'>``,
+``fromlist = ('m', 'n1', 'n2')``,
+``name = "a.b.c"``,
+``recursive = false``.
+It iterates the from-list to make sure,
+by a call to ``mod.__findattr__``,
+that each name on it is actually an attribute of the module.
+
+The first name on the list ``m``, is not an attribute,
+so the call ``mod.__findattr__("m")`` ends up in ``impAttr``,
+and hence automatically imports ``a.b.c.m`` via a call to ``find_module``.
+This import adds the module as an attribute ``m`` to ``a.b.c``.
+
+.. note::
+   This is incorrect Python behaviour, for a simple ``__findattr__`` to result in an import.
+   In the code of ``ensureFromList``, if the find fails,
+   ``ensureFromList`` itself will organise the import.
+   The implementation of ``PyModule.impAttr`` is part of the 2.7.1 magic,
+   described in :ref:`import-magic-2.7.1`.
+
+The other two calls ``mod.__findattr__("n1")`` and ``mod.__findattr__("n2")``
+find their targets as attributes in the dictionary of ``a.b.c``.
+
+The value finally returned by ``import_module_level``,
+and hence by the import operation as a whole,
+is ``<module 'a.b.c' from 'mylib/a/b/c/__init__$py.class'>``.
+Code generated in the caller `m5.py` receives this value into a temporary variable,
+then assigns module globals ``m``, ``n1``, and ``n2`` from its attributes.
+
+Execution of `m5.py` now continues as part of the import of that at the prompt,
+and the final state is illustrated by::
+
+   >>> a.b.m5.m, a.b.m5.n1, a.b.m5.n2
+   (<module 'a.b.c.m' from 'mylib\a\b\c\m$py.class'>, 1, 2)
+
 
 
 
