@@ -684,7 +684,7 @@ If we had chosen in `m4.py` to import a module not already loaded,
 a chain of events would unfold like that already described for :ref:`import-module-program`.
 
 
-.. _import_from_module:
+.. _import-from-module:
 
 A Python module by ``from-import``
 ==================================
@@ -799,6 +799,66 @@ and the final state is illustrated by::
    >>> a.b.m5.m, a.b.m5.n1, a.b.m5.n2
    (<module 'a.b.c.m' from 'mylib\a\b\c\m$py.class'>, 1, 2)
 
+
+.. _import-from-relative-module:
+
+A Python module by relative ``from-import``
+===========================================
+
+Suppose we have a module file `mylib/a/b/m6.py` like this::
+
+   from ..b.c import m, n1, n2
+   print "Executed: ", __file__, "m =", m, (n1, n2)
+
+This import has the same meaning as that studied in :ref:`import-from-module`,
+but expressed as a relative module reference.
+(We could have written ``.c`` instead of ``..b.c``.)
+
+The expected attributes, are set up as before in `mylib/a/b/c/__init__.py`::
+
+   print "Executed: ", __file__
+   n0, n1, n2, n3, n4 = range(5)
+
+and, as previously, the path down to `mylib/a/b/c/m.py`
+is prepared with `__init__.py` files
+to create packages ``a``, ``a.b`` and ``a.b.c``.
+
+In a fresh interpreter session::
+
+   >>> import sys; sys.path[0] = 'mylib'
+   >>> import a.b.m6
+
+The only difference from :ref:`import-from-module`
+occurs where we hit the relative import during execution of ``from ..b.c import m, n1, n2``.
+The explicit relative import is going to save us searching for ``a`` relative to ``a.b``.
+
+We take up the action in ``import_module_level``
+where ``name = "b.c"``, ``level = 2`` and ``fromlist = ('m', 'n1', 'n2')`` (a ``tuple``).
+Notice that ``name`` contains none of the leading dots,
+but they have been counted in ``level``.
+This first bites in ``get_parent``,
+which deduces first that the ``__package__`` of the importing module is ``a.b``,
+and then takes off ``level-1 = 1`` further elements to return ``a``.
+This exists (as it must) in ``sys.modules``,
+so in ``import_module_level`` we have ``pkgName = "a"`` and ``pkgMod = <module 'a'>``.
+
+The first import is accomplished by a call that is effectively
+``topMod = import_next(<module 'a'>, parentName, "b", "b.c", ('m', 'n1', 'n2'))``,
+where the ``parentName`` buffer is initialised to ``pkgName = "a"``.
+``a.b`` is in ``sys.modules``, so that returns quickly with it.
+``topMod = <module 'a.b'>`` and ``parentName = "a.b"``.
+
+``import_module_level`` will continue its descent by a call:
+
+.. code-block:: java
+
+      mod = import_logic(topMod, parentName, "b.c", "a.b.c", ("m", "n1", "n2"))
+
+Within ``import_logic``,
+the first call to ``import_next`` resolves ``a.b.c``
+through a call to ``PyModule.impAttr`` on ``<module 'a.b'>``.
+We return into ``import_module_level`` with ``<module 'a.b.c'>``,
+and the sequel (``ensureFromList`` imports ``m``) is the same as in :ref:`import-from-module`.
 
 
 
