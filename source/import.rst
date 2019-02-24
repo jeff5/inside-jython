@@ -861,11 +861,177 @@ We return into ``import_module_level`` with ``<module 'a.b.c'>``,
 and the sequel (``ensureFromList`` imports ``m``) is the same as in :ref:`import-from-module`.
 
 
+.. _import-java-java:
 
 A Java class in a Java package
 ==============================
 
+Suppose we set up a Java class file ``mylib/jpkg/j/K.class``,
+where the fully-qualified class name is ``jpkg.j.K``,
+but no `__init__.py` (or its compiled form) exists on the path to ``K``.
+In a fresh interpreter session try::
 
+>>> import sys; sys.path[0] = 'mylib'
+>>> from jpkg.j import K
+
+This results in a variable ``K = <type 'jpkg.j.K'>``.
+Let's see how this comes about.
+
+The import instruction is compiled into a call
+``importFrom("jpkg.j", ["K"], <current frame>, -1)``
+which goes via the overridable ``__builtin__.__import__`` function,
+and we land as so often at ``import_module_level``.
+The ``level = -1``, and from the passed-in ``globals()``, ``get_parent`` concludes that
+there is no package context to the ``import`` instruction.
+
+.. _import-java-java-first:
+
+First package
+-------------
+
+The first port of call is ``import_next``, with
+``mod = null``,
+``parentName = new StringBuilder("")``,
+``name = "jpkg"``, 
+``outerFullName = "jpkg.j"``, and
+``fromlist = ("K",)``.
+
+``import_next`` adds "jpkg" to the ``parentName`` buffer,
+but it is not yet in ``sys.modules``,
+so it calls ``find_module("jpkg", "jpkg", null)`` to look for it as a package.
+This will succeed, but (perhaps surprisingly) not at the first entry "mylib" on ``sys.path``,
+because Jython only looks there for Python modules.
+
+.. note::
+   When Jython finds that an apparent package in an import corresponds to a directory,
+   but it contains no `__init__.py` (or compiled `__init__$py.class`),
+   it issues a warning via the ``warnings`` package.
+   This is required Python behaviour,
+   although premature while the directory might still be a Java package.
+
+   The first time this happens, it results in a long complex sequence of imports,
+   right in the middle of the behaviour we want to study,
+   so in this experiment it has been disabled by comment markers in the tests described here.
+
+``find_module`` searches ``sys.path``
+and eventually reaches the special entry ``__classpath__``.
+For this entry, ``imp.getPathImporter`` produces
+an ``org.python.core.JavaImporter`` with its own ``find_module`` method,
+which ``imp.find_module`` calls.
+Note that this method must be a Python callable,
+found and by the attribute look-up ``importer.__getattr__("find_module")``,
+so that an importer may be defined in Python.
+
+``JavaImporter.find_module`` relies on ``SysPackageManager.lookupName``.
+That method searches the package index built from the class path and other locations,
+which contains a tree of ``PyJavaPackage`` objects,
+connected through their Python attributes,
+and rooted in the nameless top-level package held by the ``SysPackageManager``.
+(All ``PyJavaPackage``\ s also point back to the ``SysPackageManager`` that owns them.)
+The root ``<java package >`` has attributes ``com``, ``java``, ``org``, etc.,
+``<java package org>`` has attributes ``python``, ``junit``, ``antlr``, etc.,
+``<java package org.python>`` has attributes ``core``, ``modules``, etc., and so on.
+
+If necessary ``SysPackageManager.lookupName`` would traverse this hierarchy,
+looking for its target,
+but the root ``<java package >`` does not currently have an attribute ``jpkg``.
+An attempt to access it lands at ``PyJavaPackage.__findattr_ex__``,
+which calls ``__mgr__.packageExists("", "jpkg")``,
+where ``__mgr__`` is the related ``SysPackageManager``.
+The method ``packageExists`` looks first for `./jpkg`,
+and then relative to the elements of ``sys.path`` (starting with `./mylib`).
+Because `./mylib/jpkg` does not contain any Python files, it is identified as a Java package,
+and added as a new ``<java package jpkg>`` to the ``__dict__`` of the current (nameless) package.
+
+Although ``jpkg`` has been added to the index of known packages,
+``JavaImporter.find_module`` returns the importer object itself to ``imp.find_module``,
+as ``loader`` (in line with the Python specification).
+``imp.find_module`` effectively calls ``loader.load_module("jpkg")``,
+which in turn relies on a second call to ``SysPackageManager.lookupName``.
+This time, however,
+``<java package jpkg>`` is found immediately in the top-level,
+and becomes the module returned to ``import_next`` (and added there to ``sys.modules``).
+
+On return into ``import_module_level``, ``topMod = <java package jpkg>``.
+
+.. _import-java-java-subsequent:
+
+Subsequent packages
+-------------------
+
+There is another element to the package name ``jpkg.j``, and so we have not finished.
+The next call is to ``import_logic``,
+which as we know operates a loop around ``import_next`` to load successive modules.
+In this case, we are only looking for ``jpkg.j``,
+so it will make a single call into ``import_next`` with
+``mod = <java package jpkg>``,
+``parentName = "jpkg"``,
+``name = "j"``,
+``outerFullName = "jpkg.j"``, and
+``fromlist = ("K",)``.
+``"j"`` is appended to ``parentName`` and since the result ``jpkg.j`` is not in ``sys.modules``,
+and ``mod != null``,
+the import looks for ``"j"`` as an attribute by a call ``mod.impAttr("j")``.
+
+This leads us again to ``PyJavaPackage.__findattr_ex__("j")``.
+There is no such attribute yet,
+so it calls ``__mgr__.packageExists("jpkg", "j")``.
+As before ``SysPackageManager.packageExists`` tries for ``jpkg.j``,
+first as `./jpkg/j`,
+then along ``sys.path`` where it is found at `mylib/jpkg/j`.
+
+Creation and return of ``<java package jpkg.j>`` into ``import_logic``
+then happens much as described in :ref:`import-java-java-first`.
+
+An important difference from the first package is
+the use of ``impAttr`` rather than ``find_module`` during ``import_next``,
+which occurs because the search for ``jpkg.j`` happens in the context of a known package ``jpkg``.
+This avoids searching for the module in several places (``sys.meta_path``, built-ins),
+necessary when a top-level package is being sought.
+In particular, as ``sys.path`` is traversed, ``sys.path_hooks`` is not consulted,
+so there is no reflective ``importer.find_module`` call.
+Instead, the package manager that found ``jpkg`` in the first round,
+and referenced by that object's ``__mgr__`` attribute,
+is consulted directly.
+
+.. _import-java-java-fromlist:
+
+Satisfying the from-list
+------------------------
+
+On return into ``import_module_level``,
+the remaining action is to process the from-list.
+This is handled by ``imp.ensureFromList``.
+The pure Python version of this was described in :ref:`import-from-relative-module`,
+and is effectively a call to ``mod.__findattr__`` for each name in the list (here just "K").
+This time the target is ``<java package jpkg.j>`` rather than a ``PyModule``.
+
+Again we find ourselves in ``PyJavaPackage.__findattr_ex__``.
+"K" is not yet a key in that module's ``__dict__``,
+so we try to find it as a sub-package
+by a call ``__mgr__.packageExists("jpkg.j", "K")``.
+There is no directory `./jpkg/j/K` or anywhere on ``sys.path``,
+so ``PyJavaPackage.__findattr_ex__`` fails to find a package.
+
+``PyJavaPackage.__findattr_ex__`` then tries to add ``jpkg.j.K`` as a class,
+by a call ``__mgr__.findClass("jpkg.j", "K")``,
+which relies (eventually) on ``Py.findClassInternal``.
+That method chooses a particular loader (an instance of ``SyspathJavaLoader`` in this case),
+and loads, and Java-initialises, the class ``jpkg.j.K`` using it.
+``PyJavaPackage.__findattr_ex__`` then calls ``addClass``
+to add it to the current ``PyJavaPackage``'s ``__dict__``.
+For this, the class it must be wrapped as a ``PyObject``,
+that is, a ``PyType`` must be created for ``jpkg.j.K``.
+
+It is sufficient to have added ``K`` as an attribute of ``<java package jpkg.j>``,
+and to return ``<java package jpkg.j>`` from ``import_module_level``,
+because ``importFromAs`` will mine it for the values corresponding to the from-list.
+This is returned as an array (of length 1 here) into the code generated by the compiler,
+when it compiled the ``import`` statement,
+which will bind a local name ``K = <type 'jpkg.j.K'>``.
+
+
+.. _import-python-java:
 
 A Java class in a Python package
 ================================
