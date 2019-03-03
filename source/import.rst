@@ -144,7 +144,7 @@ are not able to find the Java classes
 (and regard this as a regression).
 
 
-Behaviour proposed for 2.7.2
+Behaviour proposed for 2.7.x
 ============================
 
 A Python package ``a.b.c`` that also defines classes in Java
@@ -185,10 +185,12 @@ but there would be no Python code to execute on initialisation.
 
 
 
-Sequence of events in Jython 2.7.1
-**********************************
+Sequence of events in Jython 2.7.2a1+
+*************************************
 
-The following notes are from studying the operation of import mechanisms.
+The following notes are from studying the operation of import mechanisms in,
+to be precise,
+Jython 2.7.2a1+ at change set ``ce0f4236962b (2019-02-02 16:55:51)``.
 
 
 .. _import-built-in:
@@ -719,7 +721,6 @@ we reach ``from a.b.c import m, n1, n2``.
 We take up the action in ``import_module_level``
 where ``name = "a.b.c"``, ``level = -1`` and ``fromlist = ('m', 'n1', 'n2')`` (a ``tuple``).
 
-
 ``a.b.c`` may be an implicit relative import.
 ``get_parent`` works out that
 the package name of the importing module ``a.b.m5`` is ``a.b``.
@@ -866,13 +867,13 @@ and the sequel (``ensureFromList`` imports ``m``) is the same as in :ref:`import
 A Java class in a Java package
 ==============================
 
-Suppose we set up a Java class file ``mylib/jpkg/j/K.class``,
+Suppose we set up a Java class file `mylib/jpkg/j/K.class`,
 where the fully-qualified class name is ``jpkg.j.K``,
 but no `__init__.py` (or its compiled form) exists on the path to ``K``.
 In a fresh interpreter session try::
 
->>> import sys; sys.path[0] = 'mylib'
->>> from jpkg.j import K
+   >>> import sys; sys.path[0] = 'mylib'
+   >>> from jpkg.j import K
 
 This results in a variable ``K = <type 'jpkg.j.K'>``.
 Let's see how this comes about.
@@ -1031,10 +1032,130 @@ when it compiled the ``import`` statement,
 which will bind a local name ``K = <type 'jpkg.j.K'>``.
 
 
-.. _import-python-java:
+.. _import-java-python:
 
 A Java class in a Python package
 ================================
 
+Suppose we set up a Java class file `mylib/mix/b/K1.class`,
+where the fully-qualified class name is ``mix.b.K1``,
+and also create `mylib/mix/__init__.py` and `mylib/mix/b/__init__.py` (or compiled forms).
+This makes ``mix`` and ``mix.b`` Python packages.
+
+In a fresh interpreter session try::
+
+   >>> import sys; sys.path[0] = 'mylib'
+   >>> from mix.b import K1
+   Executed:  mylib\mix\__init__$py.class
+   Executed:  mylib\mix\b\__init__$py.class
+
+This results in a variable ``K1 = <type 'mix.b.K1'>``,
+by a sequence of events very similar to that in :ref:`import-from-module`,
+where we traced ``from a.b.c import m, n1, n2``.
+The import of module ``mix.b`` is identical to that of ``a.b.c`` in that case,
+where afterwards, ``n1, n2`` were discovered in ``ensureFromList``
+to be Python attributes of the module ``a.b.c``,
+created by executing the module body.
+Here, however,
+``K1`` becomes an attribute of ``mix.b`` by being discovered as a class.
+
+We may satisfactorily take up the action in ``import_module_level``
+where Jython calls the equivalent of:
+
+.. code-block:: java
+
+   ensureFromList(mod, ("K1",), "mix.b")
+
+where ``mod = <module 'mix.b'>``.
+At this stage, ``ensureFromList`` has no indication that ``K1`` is not a simple attribute.
+It calls ``mod.__findattr__("K1")``, which fails to find ``"K1"`` in the module dictionary.
+``PyModule.__findattr_ex__`` then calls ``impAttr``.
+
+``impAttr`` first tries to find a module by the name ``mix.b.K1``
+in ``sys.modules``,
+then by a call to ``imp.find_module`` looking along the module's ``__path__``,
+then by ``PySystemState.packageManager.lookupName("mix.b.K1")``.
+This drives the creation of ``PyJavaPackage`` objects for ``mix`` and ``mix.b``,
+through calls to ``packageExists`` in the Java package indexer.
+
+``impAttr`` also attempts also to find a package ``mix.b.K1`` by its directory `mix/b/K1`,
+looking down the ``SysPackageManager`` search path and ``sys.path``,
+even the apparent directories `__classpath__` and `__pyclasspath__`.
+Finally, it looks for a class via ``__mgr__.findClass("mix.b", "K1")``,
+going via the ``SysPathJavaLoader``,
+which loads and Java-initialises class ``mix.b.K1``,
+and having found it that way,
+adds it as an attribute to the Python module ``mix.b``.
+
+
+.. _import-javapkg-python:
+
+A Java package in a Python package
+==================================
+
+Suppose we set up a Java class file `mylib/mix/j/K2.class`,
+where the fully-qualified class name is ``mix.j.K2``,
+and also create `mylib/mix/__init__.py` (or its compiled form).
+This makes ``mix`` a Python package, while ``mix.j`` is a Java package.
+
+In a fresh interpreter session try::
+
+   >>> import sys; sys.path[0] = 'mylib'
+   >>> import mix.j
+   Executed:  mylib\mix\__init__$py.class
+   Traceback (most recent call last):
+     File "<stdin>", line 1, in <module>
+   ImportError: No module named j
+
+That doesn't work.
+(Maybe it should.)
+``mix`` is imported, but
+in ``import_next``, ``mod.impAttr(name)`` fails to find ``"j"`` as a "magic" attribute.
+``mix`` is not recognised as a Java package, since it contains a Python file,
+and the subsequent ``JavaImportHelper.tryAddPackage`` also fails.
+
+In a fresh interpreter session try::
+
+   >>> import sys; sys.path[0] = 'mylib'
+   >>> from mix.j import K2
+
+This results in a variable ``K2 = <type 'mix.j.K2'>``.
+Let's see how this comes about.
+
+As in :ref:`import-java-java`, the import instruction is compiled into a call
+``importFrom("mix.j", ["K2"], <current frame>, -1)``.
+The action is entirely as in :ref:`import-java-java`
+until a distinction is visible in ``find_module`` where Jython scans ``sys.path``,
+and discovers `mylib/mix/__init__.py` in ``loadFromSource``.
+Unlike the Java-in-Java case, this results in a ``PyModule`` representing ``mix``,
+as the context for the import of the Java package ``j`` on entry to ``import_logic``,
+and within that to ``import_next``.
+
+``import_next`` tries to find ``j`` within ``mix`` first using ``PyModule.impAttr``.
+``PyModule.impAttr`` calls ``imp.find_module`` first to look for a Python module ``j``,
+and although the directory `mylib/mix/j` is found,
+there is no `__init__.py` there.
+``PyModule.impAttr`` next tries ``PySystemState.packageManager.lookupName("mix.j")``,
+actually a call to ``SysPackageManager.lookupName``,
+which first looks for ``"mix"`` in the nameless top-level Java package.
+However, ``__mgr__.packageExists`` does not recognise ``mix`` as a Java package,
+because it contains only the Python file,
+and so ``SysPackageManager.lookupName`` return ``null``.
+Thus ``PyModule.impAttr`` fails to find ``"mix.j"``.
+
+``import_next`` now tries to find ``"mix.j"`` using ``JavaImportHelper.tryAddPackage``.
+(This seems to be the reason for the argument ``outerFullName``, with no parallel in CPython.)
+``tryAddPackage`` receives the from-list as an argumnent,
+which here is ``(K2,)``,
+and in fact looks for the package by looking for the class ``mix.j.K2``,
+eventually in ``Py.findClassInternal``,
+which finds and loads it via the ``SyspathJavaLoader``.
+Then, having proved the class exists, ``tryAddPackage`` constructs ``PyJavaPackage``
+objects via the package index.
+
+``import_next`` can then return ``<java package mix.j 0x3>`` to ``import_logic``.
+
+Processing the from-list with ``ensureFromList``
+is then essentially in :ref:`import-java-java`.
 
 
